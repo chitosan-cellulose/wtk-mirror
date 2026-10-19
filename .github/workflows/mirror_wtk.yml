@@ -1,0 +1,74 @@
+name: Mirror wtk.getfast.work repo to gh-pages
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch apt metadata from origin
+        run: |
+          set -e
+          BASE=https://wtk.getfast.work/repo/arm64e
+          mkdir -p mirror/arm64e
+          cd mirror/arm64e
+          FILES="Release Release.gpg Packages Packages.gz Packages.bz2 Packages.xz main/binary-iphoneos-arm64e/Packages main/binary-iphoneos-arm64e/Packages.gz main/binary-iphoneos-arm64e/Packages.bz2 main/binary-iphoneos-arm64e/Packages.xz CydiaIcon.png"
+          for f in $FILES; do
+            if curl -fsS --retry 3 --connect-timeout 20 -o "$f" "$BASE/$f"; then
+              echo "OK   $f"
+            else
+              rm -f "$f"
+              echo "MISS $f"
+            fi
+          done
+          echo "----- fetched tree -----"
+          find . -type f -exec ls -la {} \;
+
+      - name: Download every deb listed in Packages
+        run: |
+          cd mirror/arm64e
+          {
+            if [ -f Packages ]; then cat Packages; fi
+            if [ -f Packages.gz ]; then zcat Packages.gz; fi
+            if [ -f Packages.bz2 ]; then bzcat Packages.bz2; fi
+            if [ -f Packages.xz ]; then xzcat Packages.xz; fi
+            if [ -f main/binary-iphoneos-arm64e/Packages ]; then cat main/binary-iphoneos-arm64e/Packages; fi
+            if [ -f main/binary-iphoneos-arm64e/Packages.gz ]; then zcat main/binary-iphoneos-arm64e/Packages.gz; fi
+            if [ -f main/binary-iphoneos-arm64e/Packages.bz2 ]; then bzcat main/binary-iphoneos-arm64e/Packages.bz2; fi
+            if [ -f main/binary-iphoneos-arm64e/Packages.xz ]; then xzcat main/binary-iphoneos-arm64e/Packages.xz; fi
+          } | grep -i '^Filename:' | sed 's/^[Ff]ilename:[[:space:]]*//' | sed 's/\r$//' | sort -u > /tmp/deblist.txt
+          echo "Packages listed $(wc -l < /tmp/deblist.txt) debs"
+          BASE=https://wtk.getfast.work/repo/arm64e
+          FAILCOUNT=0
+          while IFS= read -r fn; do
+            mkdir -p "$(dirname "$fn")"
+            if curl -fsS --retry 3 --connect-timeout 20 -o "$fn" "$BASE/$fn"; then
+              echo "OK   $fn"
+            else
+              echo "FAIL $fn"
+              FAILCOUNT=$((FAILCOUNT+1))
+            fi
+          done < /tmp/deblist.txt
+          echo "===== mirror size ====="
+          du -sh .
+          echo "FAILED_DEBS=$FAILCOUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "TOTAL_DEBS=$(wc -l < /tmp/deblist.txt)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push mirror to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./mirror
+          force_orphan: true
+          commit_message: "mirror wtk.getfast.work from run ${{ github.run_id }}"
+
+      - name: Upload artifact copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: wtk-mirror
+          path: mirror
+          retention-days: 90
